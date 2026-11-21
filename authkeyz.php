@@ -471,6 +471,8 @@ class api
         return $body;
     }
 
+    public $public_key = "8e8d104f3ce9b29b411cfcf8e049d19fed42e63caa275e111bfa71ef3d237041";
+
     private function sigCheck(string $resp, array $headers, string $type): void
     {
         $skipTypes = ['log', 'file', '2faenable', '2fadisable'];
@@ -478,6 +480,41 @@ class api
             return;
         }
 
+        $signatureHeader = $headers['x-signature-ed25519'] ?? null;
+        $timestampHeader = $headers['x-signature-timestamp'] ?? null;
+
+        // 1. Asymmetric Ed25519 Verification (AuthKeyz API 1.3 Master Protocol)
+        if (!empty($signatureHeader) && !empty($timestampHeader)) {
+            if (!extension_loaded('sodium')) {
+                die("The 'sodium' extension is required.");
+            }
+
+            if (!ctype_digit((string)$timestampHeader)) {
+                $this->failSignatureCheck();
+            }
+
+            $timestamp = (int) $timestampHeader;
+            if (abs(time() - $timestamp) > 300) {
+                throw new \RuntimeException("Clock skew too large or request expired.");
+            }
+
+            $publicKeyHex = $this->public_key ?: '8e8d104f3ce9b29b411cfcf8e049d19fed42e63caa275e111bfa71ef3d237041';
+            $signedMessage = (string)$timestampHeader . $resp;
+
+            try {
+                $signature = sodium_hex2bin($signatureHeader);
+                $publicKey = sodium_hex2bin($publicKeyHex);
+
+                if (!sodium_crypto_sign_verify_detached($signature, $signedMessage, $publicKey)) {
+                    $this->failSignatureCheck();
+                }
+                return; // Successfully verified via Ed25519
+            } catch (\Throwable $e) {
+                $this->failSignatureCheck();
+            }
+        }
+
+        // 2. Fallback: HMAC-SHA256 Verification (if Ed25519 header absent)
         $serverSig = $headers['signature'] ?? null;
         if (!empty($serverSig) && $serverSig !== 'No encryption key supplied') {
             $checkKey = $this->enckey ?: $this->secret;
